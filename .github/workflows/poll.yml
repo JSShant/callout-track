@@ -63,6 +63,8 @@ jobs:
 
       - name: Persist state to the state branch
         run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           BLOB=$(git hash-object -w "$STATE_DB_PATH")
           TREE=$(printf '100644 blob %s\tcallouts.db\n' "$BLOB" | git mktree)
           COMMIT=$(git commit-tree "$TREE" -m "Update state $(date -u +%Y-%m-%dT%H:%M:%SZ)")
