@@ -20,6 +20,6 @@ export function loadConfig(): Config {
     telegramBotToken: requireEnv('TELEGRAM_BOT_TOKEN'),
     telegramChatId: requireEnv('TELEGRAM_CHAT_ID'),
     stateDbPath: process.env.STATE_DB_PATH || './state/callouts.db',
-    xLinkRecheckBatchSize: Number(process.env.X_LINK_RECHECK_BATCH_SIZE) || 25,
+    xLinkRecheckBatchSize: Number(process.env.X_LINK_RECHECK_BATCH_SIZE) || 10,
   };
 }

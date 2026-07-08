@@ -34,6 +34,11 @@ export interface DetectionResult {
 
 const FEED_PAGE_SIZE = 25;
 const MAX_FEED_PAGES = 20; // safety valve if seen-set is somehow empty/stale
+const INTER_REQUEST_DELAY_MS = 2000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 async function fetchNewCallouts(client: DetectorClient, store: Store): Promise<Callout[]> {
   const newCallouts: Callout[] = [];
@@ -67,6 +72,7 @@ async function processNewCallouts(
   store: Store,
   notifier: Notifier,
   newCallouts: Callout[],
+  interRequestDelayMs: number,
 ): Promise<number> {
   let sentCount = 0;
 
@@ -75,6 +81,12 @@ async function processNewCallouts(
 
     const known = store.getKnownCaller(callout.userId);
     if (known) continue;
+
+    // Space out per-caller lookups - pump.fun appears to rate-limit these
+    // endpoints on a short burst window, not just cumulatively across the
+    // day, so firing several back-to-back within one cycle was enough to
+    // trip it every time regardless of the 30-min gap between runs.
+    await sleep(interRequestDelayMs);
 
     const history = await client.getCallerHistory(callout.userId, { limit: 5 });
     const foundSelf = history.callouts.some((c) => c.calloutId === callout.calloutId);
@@ -137,11 +149,13 @@ async function processXLinkTransitions(
   store: Store,
   notifier: Notifier,
   batchSize: number,
+  interRequestDelayMs: number,
 ): Promise<number> {
   let sentCount = 0;
   const candidates = store.getCallersForXLinkRecheck(batchSize);
 
   for (const caller of candidates) {
+    await sleep(interRequestDelayMs);
     const profile = await client.getProfile(caller.profile_id);
     const isLinked = profile.x_username !== null;
     const wasLinked = caller.x_linked === 1;
@@ -176,15 +190,23 @@ export async function runDetectionCycle(
   client: DetectorClient,
   store: Store,
   notifier: Notifier,
-  config: { xLinkRecheckBatchSize: number },
+  config: { xLinkRecheckBatchSize: number; interRequestDelayMs?: number },
 ): Promise<DetectionResult> {
+  const interRequestDelayMs = config.interRequestDelayMs ?? INTER_REQUEST_DELAY_MS;
   const newCallouts = await fetchNewCallouts(client, store);
-  const firstCalloutAlertsSent = await processNewCallouts(client, store, notifier, newCallouts);
+  const firstCalloutAlertsSent = await processNewCallouts(
+    client,
+    store,
+    notifier,
+    newCallouts,
+    interRequestDelayMs,
+  );
   const xLinkedAlertsSent = await processXLinkTransitions(
     client,
     store,
     notifier,
     config.xLinkRecheckBatchSize,
+    interRequestDelayMs,
   );
 
   return { firstCalloutAlertsSent, xLinkedAlertsSent };

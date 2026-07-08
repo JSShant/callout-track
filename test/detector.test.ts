@@ -58,7 +58,7 @@ test('genuine first-timer callout sends an alert immediately and caches the call
   });
   const { notifier, firstCalloutAlerts } = fakeNotifier();
 
-  const result = await runDetectionCycle(client, store, notifier, { xLinkRecheckBatchSize: 10 });
+  const result = await runDetectionCycle(client, store, notifier, { xLinkRecheckBatchSize: 10, interRequestDelayMs: 0 });
 
   assert.equal(result.firstCalloutAlertsSent, 1);
   assert.equal(firstCalloutAlerts.length, 1);
@@ -85,7 +85,7 @@ test('a later failure in the same cycle does not erase an already-sent alert', a
   });
 
   await assert.rejects(() =>
-    runDetectionCycle(client, store, notifier, { xLinkRecheckBatchSize: 10 }),
+    runDetectionCycle(client, store, notifier, { xLinkRecheckBatchSize: 10, interRequestDelayMs: 0 }),
   );
 
   // The alert for the first, successfully-processed caller must already have
@@ -109,7 +109,7 @@ test('caller with prior history is not flagged as a first-timer', async () => {
   });
   const { notifier, firstCalloutAlerts } = fakeNotifier();
 
-  const result = await runDetectionCycle(client, store, notifier, { xLinkRecheckBatchSize: 10 });
+  const result = await runDetectionCycle(client, store, notifier, { xLinkRecheckBatchSize: 10, interRequestDelayMs: 0 });
 
   assert.equal(result.firstCalloutAlertsSent, 0);
   assert.equal(firstCalloutAlerts.length, 0);
@@ -132,7 +132,7 @@ test('already-known caller is skipped without an extra history lookup', async ()
   });
   const { notifier } = fakeNotifier();
 
-  const result = await runDetectionCycle(client, store, notifier, { xLinkRecheckBatchSize: 10 });
+  const result = await runDetectionCycle(client, store, notifier, { xLinkRecheckBatchSize: 10, interRequestDelayMs: 0 });
 
   assert.equal(result.firstCalloutAlertsSent, 0);
   assert.equal(historyCalls, 0);
@@ -148,7 +148,7 @@ test('ambiguous history (callout not yet visible in caller history) fails closed
   });
   const { notifier } = fakeNotifier();
 
-  const result = await runDetectionCycle(client, store, notifier, { xLinkRecheckBatchSize: 10 });
+  const result = await runDetectionCycle(client, store, notifier, { xLinkRecheckBatchSize: 10, interRequestDelayMs: 0 });
 
   assert.equal(result.firstCalloutAlertsSent, 0);
   assert.equal(store.getKnownCaller(callout.userId), undefined);
@@ -170,7 +170,7 @@ test('feed pagination stops once an already-seen callout id is reached', async (
   });
   const { notifier } = fakeNotifier();
 
-  await runDetectionCycle(client, store, notifier, { xLinkRecheckBatchSize: 10 });
+  await runDetectionCycle(client, store, notifier, { xLinkRecheckBatchSize: 10, interRequestDelayMs: 0 });
 
   assert.equal(pageRequests, 1);
   assert.equal(store.hasSeenCallout(first!.calloutId), true);
@@ -188,7 +188,7 @@ test('x-link transition fires only on a genuine not-linked -> linked change', as
   });
   const { notifier, xLinkedAlerts } = fakeNotifier();
 
-  const result = await runDetectionCycle(client, store, notifier, { xLinkRecheckBatchSize: 10 });
+  const result = await runDetectionCycle(client, store, notifier, { xLinkRecheckBatchSize: 10, interRequestDelayMs: 0 });
 
   assert.equal(result.xLinkedAlertsSent, 1);
   assert.equal(xLinkedAlerts.length, 1);
@@ -207,7 +207,7 @@ test('x-link already true on the very first check does not fire (no prior baseli
   });
   const { notifier } = fakeNotifier();
 
-  const result = await runDetectionCycle(client, store, notifier, { xLinkRecheckBatchSize: 10 });
+  const result = await runDetectionCycle(client, store, notifier, { xLinkRecheckBatchSize: 10, interRequestDelayMs: 0 });
 
   assert.equal(result.xLinkedAlertsSent, 0);
   assert.equal(store.getKnownCaller('addr2')?.x_linked, 1);
@@ -225,7 +225,7 @@ test('x-link still false on recheck does not fire, but refreshes the checked-at 
   });
   const { notifier } = fakeNotifier();
 
-  const result = await runDetectionCycle(client, store, notifier, { xLinkRecheckBatchSize: 10 });
+  const result = await runDetectionCycle(client, store, notifier, { xLinkRecheckBatchSize: 10, interRequestDelayMs: 0 });
 
   assert.equal(result.xLinkedAlertsSent, 0);
   const after = store.getKnownCaller('addr3')!;
