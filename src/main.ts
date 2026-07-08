@@ -12,6 +12,7 @@ const BOOTSTRAP_PAGE_SIZE = 50;
 const TOKEN_EXPIRY_WARNING_HOURS = 48;
 const TOKEN_EXPIRY_WARNING_THROTTLE_MS = 24 * 60 * 60 * 1000;
 const AUTH_EXPIRED_WARNING_THROTTLE_MS = 6 * 60 * 60 * 1000;
+const UNEXPECTED_ERROR_WARNING_THROTTLE_MS = 3 * 60 * 60 * 1000;
 const SEEN_CALLOUT_RETENTION_DAYS = 14;
 
 export async function bootstrap(client: DetectorClient, store: Store): Promise<void> {
@@ -117,7 +118,17 @@ async function main(): Promise<void> {
       process.exitCode = 1;
       return;
     }
-    throw err;
+
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('[main] Unexpected error:', err);
+    if (!recentlyWarned(store, 'unexpected_error_warning_sent_at', UNEXPECTED_ERROR_WARNING_THROTTLE_MS)) {
+      await notifier.sendSystemMessage(
+        `The callout monitor hit an unexpected error and this run failed: ${message}. ` +
+          'Check the GitHub Actions run log for details.',
+      );
+      store.setMeta('unexpected_error_warning_sent_at', new Date().toISOString());
+    }
+    process.exitCode = 1;
   } finally {
     store.close();
   }
