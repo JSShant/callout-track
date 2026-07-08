@@ -16,10 +16,21 @@ response shapes and pagination behavior verified.
 - Host: `https://frontend-api-v3.pump.fun`
 - Auth: **cookie**, not a Bearer header — `Cookie: auth_token=<JWT>`.
 - Confirmed working with **only** `auth_token` — no `cf_clearance` / `_cf_bm`
-  (Cloudflare bot-challenge cookies) needed. Tested from a residential IP so
-  far; still needs confirming from an actual GitHub Actions runner (datacenter
-  IP) before fully trusting this for production hosting — that's the real
-  test of the edge-blocking risk flagged in the plan.
+  (Cloudflare bot-challenge cookies) needed. **Confirmed from an actual
+  GitHub Actions runner** (not just a residential IP) across three separate
+  runs landing in three different Azure regions (northcentralus, eastus,
+  westcentralus) — no Cloudflare blocking observed. The edge-blocking risk
+  flagged in the plan is resolved.
+- **The token is a fully independent, stateless credential — not tied to any
+  live browser session.** Confirmed empirically: logging out of the burner
+  account in the browser, and even logging into a *different* pump.fun
+  account afterward, had no effect on the already-extracted token - the
+  workflow kept authenticating successfully as the original burner account.
+  Pump.fun's logout appears to be client-side only (clears the browser
+  cookie) with no server-side revocation. The only things that will actually
+  invalidate the token: its own `exp` claim passing, or an explicit
+  revocation by pump.fun outside of normal logout (unconfirmed whether that
+  exists at all).
 - Identifier scheme: the **Solana wallet address** is the user/caller id
   throughout (not a separate opaque profile id).
 - `pump.fun/callouts?_rsc=...` requests are Next.js RSC framework noise
