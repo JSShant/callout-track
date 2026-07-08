@@ -12,6 +12,9 @@ concurrency:
 permissions:
   contents: write
 
+env:
+  STATE_DB_PATH: state/callouts.db
+
 jobs:
   poll:
     runs-on: ubuntu-latest
@@ -31,6 +34,36 @@ jobs:
           fi
           echo "All required secrets are present."
 
-      # Real poller wired in once the discovery spike + build are done (Stage 4).
-      - name: Placeholder
-        run: echo "Scaffold OK — real polling logic not wired in yet."
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Restore state from the state branch
+        run: |
+          mkdir -p "$(dirname "$STATE_DB_PATH")"
+          if git fetch origin state 2>/dev/null; then
+            git show FETCH_HEAD:callouts.db > "$STATE_DB_PATH" 2>/dev/null \
+              && echo "Restored existing state." \
+              || echo "state branch exists but has no callouts.db yet - starting fresh."
+          else
+            echo "No state branch yet - starting fresh (expected on the very first run)."
+          fi
+
+      - name: Run poller
+        env:
+          PUMPFUN_SESSION_TOKEN: ${{ secrets.PUMPFUN_SESSION_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: npx tsx src/main.ts
+
+      - name: Persist state to the state branch
+        run: |
+          BLOB=$(git hash-object -w "$STATE_DB_PATH")
+          TREE=$(printf '100644 blob %s\tcallouts.db\n' "$BLOB" | git mktree)
+          COMMIT=$(git commit-tree "$TREE" -m "Update state $(date -u +%Y-%m-%dT%H:%M:%SZ)")
+          git push origin "$COMMIT:refs/heads/state" --force

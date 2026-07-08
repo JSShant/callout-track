@@ -10,7 +10,7 @@
   "scripts": {
     "start": "tsx src/main.ts",
     "discover": "tsx scripts/discover.ts",
-    "test": "tsx --test test/",
+    "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
