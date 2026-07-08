@@ -1,0 +1,36 @@
+name: Poll pump.fun callouts
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: pumpfun-callout-poller
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Confirm required secrets are configured
+        run: |
+          missing=0
+          [ -z "${{ secrets.PUMPFUN_SESSION_TOKEN }}" ] && echo "Missing PUMPFUN_SESSION_TOKEN" && missing=1
+          [ -z "${{ secrets.TELEGRAM_BOT_TOKEN }}" ] && echo "Missing TELEGRAM_BOT_TOKEN" && missing=1
+          [ -z "${{ secrets.TELEGRAM_CHAT_ID }}" ] && echo "Missing TELEGRAM_CHAT_ID" && missing=1
+          if [ "$missing" = "1" ]; then
+            echo "One or more required secrets are missing. Add them under Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+          echo "All required secrets are present."
+
+      # Real poller wired in once the discovery spike + build are done (Stage 4).
+      - name: Placeholder
+        run: echo "Scaffold OK — real polling logic not wired in yet."

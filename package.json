@@ -1,0 +1,25 @@
+{
+  "name": "pumpfun-callout-monitor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Polls pump.fun's callout feed for first-ever-callout and newly-linked-X events, alerting via Telegram.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "tsx src/main.ts",
+    "discover": "tsx scripts/discover.ts",
+    "test": "tsx --test test/",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.1"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^22.10.7",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}
