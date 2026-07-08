@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { loadConfig } from './config.js';
 import type { DetectorClient } from './detector.js';
 import { runDetectionCycle } from './detector.js';
@@ -70,40 +71,15 @@ async function main(): Promise<void> {
       return;
     }
 
-    const result = await runDetectionCycle(client, store, {
+    const result = await runDetectionCycle(client, store, notifier, {
       xLinkRecheckBatchSize: config.xLinkRecheckBatchSize,
     });
-
-    for (const alert of result.firstCalloutAlerts) {
-      const sent = await notifier.sendFirstCalloutAlert(alert);
-      store.recordFirstCalloutAlert({
-        calloutId: alert.calloutId,
-        callerProfileId: alert.callerProfileId,
-        callerDisplayName: alert.callerDisplayName,
-        coinMint: alert.coinMint,
-        coinSymbol: alert.coinSymbol,
-        marketCapAtCall: alert.marketCapAtCall,
-        xLinkedAtCallTime: alert.xLinked,
-        xHandleAtCallTime: alert.xHandle,
-        notifyStatus: sent ? 'sent' : 'failed',
-      });
-    }
-
-    for (const alert of result.xLinkedAlerts) {
-      const sent = await notifier.sendXLinkedAlert(alert);
-      store.recordXLinkedAlert({
-        profileId: alert.profileId,
-        displayName: alert.displayName,
-        xHandle: alert.xHandle,
-        notifyStatus: sent ? 'sent' : 'failed',
-      });
-    }
 
     store.pruneOldSeenCallouts(SEEN_CALLOUT_RETENTION_DAYS);
 
     console.log(
-      `[main] Cycle complete: ${result.firstCalloutAlerts.length} first-callout alert(s), ` +
-        `${result.xLinkedAlerts.length} x-linked alert(s).`,
+      `[main] Cycle complete: ${result.firstCalloutAlertsSent} first-callout alert(s), ` +
+        `${result.xLinkedAlertsSent} x-linked alert(s).`,
     );
   } catch (err) {
     if (err instanceof AuthExpiredError) {
@@ -134,7 +110,12 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err) => {
-  console.error('[main] Unhandled error:', err);
-  process.exitCode = 1;
-});
+// Only auto-run when executed directly (e.g. `tsx src/main.ts`) - guards
+// against side effects when this module is merely imported elsewhere, such
+// as a test file importing `bootstrap` triggering a real, live run.
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main().catch((err) => {
+    console.error('[main] Unhandled error:', err);
+    process.exitCode = 1;
+  });
+}

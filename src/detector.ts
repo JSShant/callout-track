@@ -1,5 +1,6 @@
 import type { PumpfunClient } from './pumpfunClient.js';
 import type { Callout } from './models.js';
+import type { Notifier } from './notifier.js';
 import type { Store } from './state.js';
 
 // Structural subset of PumpfunClient's public API that detection actually
@@ -27,8 +28,8 @@ export interface XLinkedAlert {
 }
 
 export interface DetectionResult {
-  firstCalloutAlerts: FirstCalloutAlert[];
-  xLinkedAlerts: XLinkedAlert[];
+  firstCalloutAlertsSent: number;
+  xLinkedAlertsSent: number;
 }
 
 const FEED_PAGE_SIZE = 25;
@@ -57,44 +58,17 @@ async function fetchNewCallouts(client: DetectorClient, store: Store): Promise<C
   return newCallouts;
 }
 
-async function checkXLinkTransitions(
+// Sends and persists each alert the instant it's confirmed, rather than
+// collecting them for delivery after the whole cycle finishes - so a later
+// failure elsewhere in the same run can never retroactively erase an alert
+// that was already correctly identified.
+async function processNewCallouts(
   client: DetectorClient,
   store: Store,
-  batchSize: number,
-): Promise<XLinkedAlert[]> {
-  const alerts: XLinkedAlert[] = [];
-  const candidates = store.getCallersForXLinkRecheck(batchSize);
-
-  for (const caller of candidates) {
-    const profile = await client.getProfile(caller.profile_id);
-    const isLinked = profile.x_username !== null;
-    const wasLinked = caller.x_linked === 1;
-    const hasPriorCheck = caller.x_last_checked_at !== null;
-
-    // Only a genuine not-linked -> linked transition counts. A caller we're
-    // checking for the first time who already has X linked has no prior
-    // "false" baseline to transition from, so it's not an alert-worthy event.
-    if (hasPriorCheck && !wasLinked && isLinked && profile.x_username) {
-      alerts.push({
-        profileId: caller.profile_id,
-        displayName: profile.username,
-        xHandle: profile.x_username,
-      });
-    }
-
-    store.updateXLinkStatus(caller.profile_id, isLinked, profile.x_username);
-  }
-
-  return alerts;
-}
-
-export async function runDetectionCycle(
-  client: DetectorClient,
-  store: Store,
-  config: { xLinkRecheckBatchSize: number },
-): Promise<DetectionResult> {
-  const newCallouts = await fetchNewCallouts(client, store);
-  const firstCalloutAlerts: FirstCalloutAlert[] = [];
+  notifier: Notifier,
+  newCallouts: Callout[],
+): Promise<number> {
+  let sentCount = 0;
 
   for (const callout of newCallouts) {
     store.markCalloutSeen(callout);
@@ -128,7 +102,7 @@ export async function runDetectionCycle(
     ]);
     const coin = coins[0];
 
-    firstCalloutAlerts.push({
+    const alert: FirstCalloutAlert = {
       calloutId: callout.calloutId,
       callerProfileId: callout.userId,
       callerDisplayName: profile.username,
@@ -137,12 +111,81 @@ export async function runDetectionCycle(
       marketCapAtCall: callout.marketCap,
       xLinked: profile.x_username !== null,
       xHandle: profile.x_username,
-    });
+    };
 
+    const sent = await notifier.sendFirstCalloutAlert(alert);
+    store.recordFirstCalloutAlert({
+      calloutId: alert.calloutId,
+      callerProfileId: alert.callerProfileId,
+      callerDisplayName: alert.callerDisplayName,
+      coinMint: alert.coinMint,
+      coinSymbol: alert.coinSymbol,
+      marketCapAtCall: alert.marketCapAtCall,
+      xLinkedAtCallTime: alert.xLinked,
+      xHandleAtCallTime: alert.xHandle,
+      notifyStatus: sent ? 'sent' : 'failed',
+    });
     store.confirmCallerHasHistory(callout.userId, profile.username, 'was_first_timer_we_alerted');
+    sentCount++;
   }
 
-  const xLinkedAlerts = await checkXLinkTransitions(client, store, config.xLinkRecheckBatchSize);
+  return sentCount;
+}
 
-  return { firstCalloutAlerts, xLinkedAlerts };
+async function processXLinkTransitions(
+  client: DetectorClient,
+  store: Store,
+  notifier: Notifier,
+  batchSize: number,
+): Promise<number> {
+  let sentCount = 0;
+  const candidates = store.getCallersForXLinkRecheck(batchSize);
+
+  for (const caller of candidates) {
+    const profile = await client.getProfile(caller.profile_id);
+    const isLinked = profile.x_username !== null;
+    const wasLinked = caller.x_linked === 1;
+    const hasPriorCheck = caller.x_last_checked_at !== null;
+
+    // Only a genuine not-linked -> linked transition counts. A caller we're
+    // checking for the first time who already has X linked has no prior
+    // "false" baseline to transition from, so it's not an alert-worthy event.
+    if (hasPriorCheck && !wasLinked && isLinked && profile.x_username) {
+      const alert: XLinkedAlert = {
+        profileId: caller.profile_id,
+        displayName: profile.username,
+        xHandle: profile.x_username,
+      };
+      const sent = await notifier.sendXLinkedAlert(alert);
+      store.recordXLinkedAlert({
+        profileId: alert.profileId,
+        displayName: alert.displayName,
+        xHandle: alert.xHandle,
+        notifyStatus: sent ? 'sent' : 'failed',
+      });
+      sentCount++;
+    }
+
+    store.updateXLinkStatus(caller.profile_id, isLinked, profile.x_username);
+  }
+
+  return sentCount;
+}
+
+export async function runDetectionCycle(
+  client: DetectorClient,
+  store: Store,
+  notifier: Notifier,
+  config: { xLinkRecheckBatchSize: number },
+): Promise<DetectionResult> {
+  const newCallouts = await fetchNewCallouts(client, store);
+  const firstCalloutAlertsSent = await processNewCallouts(client, store, notifier, newCallouts);
+  const xLinkedAlertsSent = await processXLinkTransitions(
+    client,
+    store,
+    notifier,
+    config.xLinkRecheckBatchSize,
+  );
+
+  return { firstCalloutAlertsSent, xLinkedAlertsSent };
 }

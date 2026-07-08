@@ -3,9 +3,10 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import type { DetectorClient } from '../src/detector.js';
+import type { DetectorClient, FirstCalloutAlert, XLinkedAlert } from '../src/detector.js';
 import { runDetectionCycle } from '../src/detector.js';
 import type { CalloutListResponse, CoinInfo, Profile } from '../src/models.js';
+import type { Notifier } from '../src/notifier.js';
 import { Store } from '../src/state.js';
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -31,19 +32,70 @@ function fakeClient(overrides: Partial<DetectorClient> = {}): DetectorClient {
   };
 }
 
-test('genuine first-timer callout triggers an alert and caches the caller as known', async () => {
+function fakeNotifier() {
+  const firstCalloutAlerts: FirstCalloutAlert[] = [];
+  const xLinkedAlerts: XLinkedAlert[] = [];
+  const notifier: Notifier = {
+    sendFirstCalloutAlert: async (alert) => {
+      firstCalloutAlerts.push(alert);
+      return true;
+    },
+    sendXLinkedAlert: async (alert) => {
+      xLinkedAlerts.push(alert);
+      return true;
+    },
+    sendSystemMessage: async () => true,
+  };
+  return { notifier, firstCalloutAlerts, xLinkedAlerts };
+}
+
+test('genuine first-timer callout sends an alert immediately and caches the caller as known', async () => {
   const store = new Store(':memory:');
   const callout = singleHistory.callouts[0]!;
   const client = fakeClient({
     getRecentCallouts: async () => ({ callouts: [callout], nextPageToken: '' }),
     getCallerHistory: async () => singleHistory,
   });
+  const { notifier, firstCalloutAlerts } = fakeNotifier();
 
-  const result = await runDetectionCycle(client, store, { xLinkRecheckBatchSize: 10 });
+  const result = await runDetectionCycle(client, store, notifier, { xLinkRecheckBatchSize: 10 });
 
-  assert.equal(result.firstCalloutAlerts.length, 1);
-  assert.equal(result.firstCalloutAlerts[0]!.calloutId, callout.calloutId);
+  assert.equal(result.firstCalloutAlertsSent, 1);
+  assert.equal(firstCalloutAlerts.length, 1);
+  assert.equal(firstCalloutAlerts[0]!.calloutId, callout.calloutId);
   assert.equal(store.getKnownCaller(callout.userId)?.confirmation_reason, 'was_first_timer_we_alerted');
+  store.close();
+});
+
+test('a later failure in the same cycle does not erase an already-sent alert', async () => {
+  const store = new Store(':memory:');
+  const firstTimerCallout = singleHistory.callouts[0]!;
+  const laterCallout = { ...recentFeed.callouts[0]!, userId: 'some-other-caller' };
+  const { notifier, firstCalloutAlerts } = fakeNotifier();
+
+  const client = fakeClient({
+    getRecentCallouts: async () => ({
+      callouts: [firstTimerCallout, laterCallout],
+      nextPageToken: '',
+    }),
+    getCallerHistory: async (userId: string) => {
+      if (userId === firstTimerCallout.userId) return singleHistory;
+      throw new Error('simulated failure processing a later callout');
+    },
+  });
+
+  await assert.rejects(() =>
+    runDetectionCycle(client, store, notifier, { xLinkRecheckBatchSize: 10 }),
+  );
+
+  // The alert for the first, successfully-processed caller must already have
+  // been sent and persisted before the later callout blew up the cycle.
+  assert.equal(firstCalloutAlerts.length, 1);
+  assert.equal(firstCalloutAlerts[0]!.calloutId, firstTimerCallout.calloutId);
+  assert.equal(
+    store.getKnownCaller(firstTimerCallout.userId)?.confirmation_reason,
+    'was_first_timer_we_alerted',
+  );
   store.close();
 });
 
@@ -55,10 +107,12 @@ test('caller with prior history is not flagged as a first-timer', async () => {
     getRecentCallouts: async () => ({ callouts: [callout], nextPageToken: '' }),
     getCallerHistory: async () => ({ callouts: [callout, priorCallout], nextPageToken: '' }),
   });
+  const { notifier, firstCalloutAlerts } = fakeNotifier();
 
-  const result = await runDetectionCycle(client, store, { xLinkRecheckBatchSize: 10 });
+  const result = await runDetectionCycle(client, store, notifier, { xLinkRecheckBatchSize: 10 });
 
-  assert.equal(result.firstCalloutAlerts.length, 0);
+  assert.equal(result.firstCalloutAlertsSent, 0);
+  assert.equal(firstCalloutAlerts.length, 0);
   assert.equal(store.getKnownCaller(callout.userId)?.confirmation_reason, 'history>1');
   store.close();
 });
@@ -76,10 +130,11 @@ test('already-known caller is skipped without an extra history lookup', async ()
       return emptyHistory;
     },
   });
+  const { notifier } = fakeNotifier();
 
-  const result = await runDetectionCycle(client, store, { xLinkRecheckBatchSize: 10 });
+  const result = await runDetectionCycle(client, store, notifier, { xLinkRecheckBatchSize: 10 });
 
-  assert.equal(result.firstCalloutAlerts.length, 0);
+  assert.equal(result.firstCalloutAlertsSent, 0);
   assert.equal(historyCalls, 0);
   store.close();
 });
@@ -91,10 +146,11 @@ test('ambiguous history (callout not yet visible in caller history) fails closed
     getRecentCallouts: async () => ({ callouts: [callout], nextPageToken: '' }),
     getCallerHistory: async () => emptyHistory, // doesn't even contain this callout yet
   });
+  const { notifier } = fakeNotifier();
 
-  const result = await runDetectionCycle(client, store, { xLinkRecheckBatchSize: 10 });
+  const result = await runDetectionCycle(client, store, notifier, { xLinkRecheckBatchSize: 10 });
 
-  assert.equal(result.firstCalloutAlerts.length, 0);
+  assert.equal(result.firstCalloutAlertsSent, 0);
   assert.equal(store.getKnownCaller(callout.userId), undefined);
   store.close();
 });
@@ -112,8 +168,9 @@ test('feed pagination stops once an already-seen callout id is reached', async (
     },
     getCallerHistory: async () => emptyHistory,
   });
+  const { notifier } = fakeNotifier();
 
-  await runDetectionCycle(client, store, { xLinkRecheckBatchSize: 10 });
+  await runDetectionCycle(client, store, notifier, { xLinkRecheckBatchSize: 10 });
 
   assert.equal(pageRequests, 1);
   assert.equal(store.hasSeenCallout(first!.calloutId), true);
@@ -129,12 +186,14 @@ test('x-link transition fires only on a genuine not-linked -> linked change', as
   const client = fakeClient({
     getProfile: async () => ({ ...linkedProfile, address: 'addr1' }),
   });
+  const { notifier, xLinkedAlerts } = fakeNotifier();
 
-  const result = await runDetectionCycle(client, store, { xLinkRecheckBatchSize: 10 });
+  const result = await runDetectionCycle(client, store, notifier, { xLinkRecheckBatchSize: 10 });
 
-  assert.equal(result.xLinkedAlerts.length, 1);
-  assert.equal(result.xLinkedAlerts[0]!.profileId, 'addr1');
-  assert.equal(result.xLinkedAlerts[0]!.xHandle, linkedProfile.x_username);
+  assert.equal(result.xLinkedAlertsSent, 1);
+  assert.equal(xLinkedAlerts.length, 1);
+  assert.equal(xLinkedAlerts[0]!.profileId, 'addr1');
+  assert.equal(xLinkedAlerts[0]!.xHandle, linkedProfile.x_username);
   store.close();
 });
 
@@ -146,10 +205,11 @@ test('x-link already true on the very first check does not fire (no prior baseli
   const client = fakeClient({
     getProfile: async () => ({ ...linkedProfile, address: 'addr2' }),
   });
+  const { notifier } = fakeNotifier();
 
-  const result = await runDetectionCycle(client, store, { xLinkRecheckBatchSize: 10 });
+  const result = await runDetectionCycle(client, store, notifier, { xLinkRecheckBatchSize: 10 });
 
-  assert.equal(result.xLinkedAlerts.length, 0);
+  assert.equal(result.xLinkedAlertsSent, 0);
   assert.equal(store.getKnownCaller('addr2')?.x_linked, 1);
   store.close();
 });
@@ -163,10 +223,11 @@ test('x-link still false on recheck does not fire, but refreshes the checked-at 
   const client = fakeClient({
     getProfile: async () => ({ ...unlinkedProfile, address: 'addr3' }),
   });
+  const { notifier } = fakeNotifier();
 
-  const result = await runDetectionCycle(client, store, { xLinkRecheckBatchSize: 10 });
+  const result = await runDetectionCycle(client, store, notifier, { xLinkRecheckBatchSize: 10 });
 
-  assert.equal(result.xLinkedAlerts.length, 0);
+  assert.equal(result.xLinkedAlertsSent, 0);
   const after = store.getKnownCaller('addr3')!;
   assert.equal(after.x_linked, 0);
   assert.ok(after.x_last_checked_at! >= before!);

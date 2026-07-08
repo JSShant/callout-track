@@ -7,21 +7,11 @@ import type {
 } from './models.js';
 
 const BASE_URL = 'https://frontend-api-v3.pump.fun';
-const MAX_RETRIES = 4;
+const MAX_RETRIES = 3;
 const RETRY_BASE_DELAY_MS = 1000;
-const RATE_LIMIT_FALLBACK_DELAY_MS = 5000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function retryAfterMs(res: Response): number | undefined {
-  const header = res.headers.get('retry-after');
-  if (!header) return undefined;
-  const seconds = Number(header);
-  if (Number.isFinite(seconds)) return seconds * 1000;
-  const dateMs = Date.parse(header);
-  return Number.isFinite(dateMs) ? Math.max(0, dateMs - Date.now()) : undefined;
 }
 
 export class PumpfunClient {
@@ -47,14 +37,18 @@ export class PumpfunClient {
         throw new AuthExpiredError(`Auth failed (${res.status}) for ${path}`);
       }
 
-      if (res.status === 429 || res.status >= 500) {
+      if (res.status === 429) {
+        // pump.fun's rate-limit cooldown appears to run many minutes long -
+        // waiting it out inside a single run isn't viable at a 30-min cadence.
+        // Fail fast and let the next scheduled cycle pick this up instead.
+        const retryAfter = res.headers.get('retry-after');
+        throw new TransientAPIError(
+          `Rate limited (429) for ${path}${retryAfter ? ` (retry-after: ${retryAfter})` : ''} - deferring to next scheduled run`,
+        );
+      }
+
+      if (res.status >= 500) {
         lastErr = new TransientAPIError(`Transient error (${res.status}) for ${path}`);
-        // Rate limits get their own wait, honoring Retry-After if pump.fun
-        // sends one, since guessing with exponential backoff alone is what
-        // burned us here - a 429 usually means "not yet", not "try harder".
-        if (res.status === 429) {
-          await sleep(retryAfterMs(res) ?? RATE_LIMIT_FALLBACK_DELAY_MS);
-        }
         continue;
       }
 
