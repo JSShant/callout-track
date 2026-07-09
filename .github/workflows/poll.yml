@@ -1,8 +1,12 @@
 name: Poll pump.fun callouts
 
 on:
-  schedule:
-    - cron: "7,37 * * * *"
+  # Schedule temporarily disabled (2026-07-08) to let pump.fun's rate limit
+  # from today's heavy testing volume fully cool down, since polling every
+  # 30 min may have been re-triggering/extending it before it could expire.
+  # Re-enable once a manual run succeeds cleanly again:
+  # schedule:
+  #   - cron: "7,37 * * * *"
   workflow_dispatch: {}
 
 concurrency:
